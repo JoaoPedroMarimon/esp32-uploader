@@ -25,7 +25,11 @@ a = Analysis(
         'base64',
         'tempfile',
         'subprocess',
-        'time'
+        'time',
+        'esptool',
+        'esptool.cmds',
+        'esptool.loader',
+        'esptool.util'
     ],
     hookspath=[],
     hooksconfig={},

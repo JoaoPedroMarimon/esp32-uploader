@@ -1,4 +1,4 @@
-# build_executable.py
+# build_executable_fixed.py
 import os
 import base64
 import subprocess
@@ -60,31 +60,35 @@ def install_requirements():
     
     return True
 
-def create_executable(script_path):
-    """Cria o executável usando PyInstaller"""
-    print("Criando executável...")
+def create_executable_with_esptool(script_path):
+    """Cria o executável usando PyInstaller com esptool embutido"""
+    print("Criando executável com esptool embutido...")
     
     cmd = [
         'pyinstaller',
-        '--onefile',           # Arquivo único
-        '--console',           # COM console (CLI)
-        '--name=ESP32AutoFlasher', # Nome do executável
-        '--icon=esp32.ico',    # Ícone (opcional)
-        '--add-data=*.dll;.',  # Inclui DLLs se necessário
+        '--onefile',                    # Arquivo único
+        '--console',                    # Com console (CLI)
+        '--name=ESP32AutoFlasher',      # Nome do executável
+        '--hidden-import=esptool',      # Força inclusão do esptool
+        '--hidden-import=esptool.cmds', # Submódulos do esptool
+        '--hidden-import=esptool.loader',
+        '--hidden-import=esptool.util',
+        '--hidden-import=serial',
+        '--hidden-import=serial.tools.list_ports',
+        '--collect-all=esptool',        # Coleta todos os arquivos do esptool
         script_path
     ]
     
-    # Remove --icon se não existir o arquivo
-    if not os.path.exists('esp32.ico'):
-        cmd.remove('--icon=esp32.ico')
-        
-    # Remove --add-data se não há DLLs
-    if not any(f.endswith('.dll') for f in os.listdir('.')):
-        cmd = [c for c in cmd if not c.startswith('--add-data')]
+    # Adiciona ícone se existir
+    if os.path.exists('esp32.ico'):
+        cmd.extend(['--icon=esp32.ico'])
     
     try:
+        print("Executando PyInstaller...")
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         print("✅ Executável criado com sucesso!")
+        print("Saída do PyInstaller:")
+        print(result.stdout)
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ Erro ao criar executável: {e}")
@@ -92,9 +96,19 @@ def create_executable(script_path):
         print(f"Erro: {e.stderr}")
         return False
 
+def test_esptool_import():
+    """Testa se esptool pode ser importado"""
+    try:
+        import esptool
+        print("✅ esptool pode ser importado")
+        return True
+    except ImportError as e:
+        print(f"❌ Erro ao importar esptool: {e}")
+        return False
+
 def main():
-    print("🔧 ESP32 Compiler - Build Script")
-    print("=" * 40)
+    print("🔧 ESP32 Auto Flasher - Build Script CORRIGIDO")
+    print("=" * 50)
     
     # Verifica arquivos necessários
     firmware_path = 'firmware.bin'
@@ -115,15 +129,24 @@ def main():
         print("❌ Falha ao instalar dependências")
         return
     
-    # 2. Embute firmware no script
+    # 2. Testa import do esptool
+    if not test_esptool_import():
+        print("❌ esptool não pode ser importado")
+        return
+    
+    # 3. Embute firmware no script
     embedded_script = 'esp32_compiler_embedded.py'
     if not embed_firmware_in_script(firmware_path, script_path, embedded_script):
         return
     
-    # 3. Cria executável
-    if create_executable(embedded_script):
+    # 4. Cria executável com esptool embutido
+    if create_executable_with_esptool(embedded_script):
         print("\n🎉 BUILD CONCLUÍDO!")
         print("Executável criado em: dist/ESP32AutoFlasher.exe")
+        print("\n📋 TESTE RECOMENDADO:")
+        print("1. Conecte um ESP32 ao PC")
+        print("2. Execute: dist/ESP32AutoFlasher.exe")
+        print("3. Verifique se não há mais erro de esptool")
         
         # Limpeza
         try:

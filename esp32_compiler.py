@@ -68,23 +68,42 @@ class ESP32AutoFlasher:
     def check_esptool(self):
         """Verifica se esptool está disponível"""
         try:
-            result = subprocess.run(['esptool.py', '--help'], 
-                                  capture_output=True, text=True, timeout=10)
+            # Tenta importar esptool como módulo Python
+            import esptool
             return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            return False
+        except ImportError:
+            try:
+                # Tenta executar esptool.py como comando
+                result = subprocess.run(['esptool.py', '--help'], 
+                                      capture_output=True, text=True, timeout=10)
+                return True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                try:
+                    # Tenta esptool sem .py
+                    result = subprocess.run(['esptool', '--help'], 
+                                          capture_output=True, text=True, timeout=10)
+                    return True
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    return False
             
     def install_esptool(self):
-        """Instala esptool via pip"""
-        self.log("esptool não encontrado. Instalando...", "PROGRESS")
-        try:
-            subprocess.run([sys.executable, '-m', 'pip', 'install', 'esptool'], 
-                          check=True, capture_output=True, timeout=60)
-            self.log("esptool instalado com sucesso!", "SUCCESS")
-            return True
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            self.log(f"Erro ao instalar esptool: {e}", "ERROR")
+        """Tenta instalar esptool se estiver rodando como script Python"""
+        if getattr(sys, 'frozen', False):
+            # Rodando como executável - esptool deve estar embutido
+            self.log("ERRO: esptool não está incluído no executável!", "ERROR")
+            self.log("O executável precisa ser recompilado com esptool incluído.", "ERROR")
             return False
+        else:
+            # Rodando como script Python - pode instalar
+            self.log("esptool não encontrado. Instalando...", "PROGRESS")
+            try:
+                subprocess.run([sys.executable, '-m', 'pip', 'install', 'esptool'], 
+                              check=True, capture_output=True, timeout=60)
+                self.log("esptool instalado com sucesso!", "SUCCESS")
+                return True
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                self.log(f"Erro ao instalar esptool: {e}", "ERROR")
+                return False
             
     def extract_firmware(self):
         """Extrai o firmware embutido para um arquivo temporário"""
@@ -116,43 +135,100 @@ class ESP32AutoFlasher:
     def flash_esp32(self, port, firmware_path):
         """Faz o upload do firmware para o ESP32"""
         try:
+            # Tenta usar esptool como módulo Python primeiro
+            try:
+                import esptool
+                use_module = True
+                self.log("Usando esptool como módulo Python", "INFO")
+            except ImportError:
+                use_module = False
+                self.log("Usando esptool como comando externo", "INFO")
+            
             # 1. Apaga a flash do ESP32
             self.log(f"Apagando flash do ESP32 na porta {port}...", "PROGRESS")
-            erase_cmd = ['esptool.py', '--port', port, 'erase_flash']
             
-            result = subprocess.run(erase_cmd, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode != 0:
-                self.log(f"Erro ao apagar flash: {result.stderr}", "ERROR")
-                return False
+            if use_module:
+                # Usar esptool como módulo
+                import esptool
+                erase_args = ['--port', port, 'erase_flash']
+                esptool.main(erase_args)
+            else:
+                # Usar como comando externo
+                erase_cmd = ['esptool.py', '--port', port, 'erase_flash']
+                result = subprocess.run(erase_cmd, capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    # Tenta sem .py
+                    erase_cmd = ['esptool', '--port', port, 'erase_flash']
+                    result = subprocess.run(erase_cmd, capture_output=True, text=True, timeout=30)
+                    if result.returncode != 0:
+                        self.log(f"Erro ao apagar flash: {result.stderr}", "ERROR")
+                        return False
                 
             self.log("Flash apagada com sucesso!", "SUCCESS")
             
             # 2. Faz upload do firmware
             self.log("Enviando firmware para ESP32...", "PROGRESS")
-            upload_cmd = [
-                'esptool.py', '--port', port, '--baud', '460800',
-                'write_flash', '--flash_size=detect', '0x0', firmware_path
-            ]
             
-            result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0:
-                self.log("FIRMWARE ENVIADO COM SUCESSO!", "SUCCESS")
-                return True
+            if use_module:
+                # Usar esptool como módulo
+                upload_args = ['--port', port, '--baud', '460800', 
+                             'write_flash', '--flash_size=detect', '0x0', firmware_path]
+                try:
+                    esptool.main(upload_args)
+                    self.log("FIRMWARE ENVIADO COM SUCESSO!", "SUCCESS")
+                    return True
+                except SystemExit as e:
+                    if e.code == 0:
+                        self.log("FIRMWARE ENVIADO COM SUCESSO!", "SUCCESS")
+                        return True
+                    else:
+                        # Tenta com baudrate menor
+                        self.log("Tentando com baudrate menor...", "WARNING")
+                        upload_args[3] = '115200'
+                        try:
+                            esptool.main(upload_args)
+                            self.log("FIRMWARE ENVIADO COM SUCESSO (baudrate baixo)!", "SUCCESS")
+                            return True
+                        except SystemExit as e2:
+                            if e2.code == 0:
+                                self.log("FIRMWARE ENVIADO COM SUCESSO (baudrate baixo)!", "SUCCESS")
+                                return True
+                            else:
+                                self.log(f"Erro no upload: código {e2.code}", "ERROR")
+                                return False
             else:
-                # Tenta com baudrate menor
-                self.log("Tentando com baudrate menor...", "WARNING")
-                upload_cmd[4] = '115200'
+                # Usar como comando externo
+                upload_cmd = [
+                    'esptool.py', '--port', port, '--baud', '460800',
+                    'write_flash', '--flash_size=detect', '0x0', firmware_path
+                ]
                 
-                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=90)
+                result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=60)
                 
                 if result.returncode == 0:
-                    self.log("FIRMWARE ENVIADO COM SUCESSO (baudrate baixo)!", "SUCCESS")
+                    self.log("FIRMWARE ENVIADO COM SUCESSO!", "SUCCESS")
                     return True
                 else:
-                    self.log(f"Erro no upload: {result.stderr}", "ERROR")
-                    return False
+                    # Tenta esptool sem .py
+                    upload_cmd[0] = 'esptool'
+                    result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=60)
+                    
+                    if result.returncode == 0:
+                        self.log("FIRMWARE ENVIADO COM SUCESSO!", "SUCCESS")
+                        return True
+                    else:
+                        # Tenta com baudrate menor
+                        self.log("Tentando com baudrate menor...", "WARNING")
+                        upload_cmd[4] = '115200'
+                        
+                        result = subprocess.run(upload_cmd, capture_output=True, text=True, timeout=90)
+                        
+                        if result.returncode == 0:
+                            self.log("FIRMWARE ENVIADO COM SUCESSO (baudrate baixo)!", "SUCCESS")
+                            return True
+                        else:
+                            self.log(f"Erro no upload: {result.stderr}", "ERROR")
+                            return False
                 
         except subprocess.TimeoutExpired:
             self.log("Timeout - Operação demorou muito tempo", "ERROR")
